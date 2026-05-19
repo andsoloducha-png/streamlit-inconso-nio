@@ -16,6 +16,7 @@ Pozwala szybko sprawdzić rozkład problemów według czasu, sortera, stanowiska
 - Pareto NIO,
 - porównanie `Shift 1` vs `Shift 2`,
 - osobna zakładka z analizą zrzutni (`Chute`),
+- analiza par `Station -> Chute`, pokazująca z jakiego stanowiska i do jakiej zrzutni leci NIO,
 - ranking top kombinacji problemowych: sorter / station / taca / NIO,
 - podgląd danych po filtrach.
 

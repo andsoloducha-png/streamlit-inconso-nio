@@ -566,13 +566,14 @@ if filtered.empty:
     st.warning("Brak rekordów dla wybranego zakresu dat i zmiany.")
     st.stop()
 
-tab_hourly, tab_station, tab_tray, tab_station_tray, tab_chute, tab_extra, tab_data = st.tabs(
+tab_hourly, tab_station, tab_tray, tab_station_tray, tab_chute, tab_station_chute, tab_extra, tab_data = st.tabs(
     [
         "Rozkład godzinowy",
         "Sorter / stanowisko",
         "Sorter / taca",
         "Station / taca",
         "Zrzutnie",
+        "Zrzutnie / stanowiska",
         "Dodatkowe widoki",
         "Dane",
     ]
@@ -773,6 +774,74 @@ with tab_chute:
                 st.plotly_chart(fig, width="stretch")
             else:
                 st.info("Brak danych zrzutni dla aktualnych filtrów.")
+
+with tab_station_chute:
+    st.subheader("Analiza: z jakiego stanowiska i do jakiej zrzutni leci NIO")
+    if "Chute" not in station_reason.columns:
+        st.info("Brak kolumny Chute w danych.")
+    else:
+        station_chute_scope = station_reason.copy()
+        station_chute_scope["Chute"] = station_chute_scope["Chute"].fillna("brak").astype(str)
+        station_chute_scope["Station"] = station_chute_scope["Station"].fillna("brak").astype(str)
+        station_chute_scope["Station -> Chute"] = (
+            "Station "
+            + station_chute_scope["Station"]
+            + " -> Chute "
+            + station_chute_scope["Chute"]
+        )
+
+        station_chute_table = make_count_table(
+            station_chute_scope,
+            ["Tray Sorter", "Station", "Chute", "NokReason"],
+        )
+        station_chute_chart = (
+            station_chute_scope.groupby(["Station -> Chute", "NokReason"], dropna=False)
+            .size()
+            .reset_index(name="count")
+        )
+        top_pairs = (
+            station_chute_chart.groupby("Station -> Chute")["count"]
+            .sum()
+            .sort_values(ascending=False)
+            .head(25)
+            .index.tolist()
+        )
+        station_chute_chart = station_chute_chart[
+            station_chute_chart["Station -> Chute"].isin(top_pairs)
+        ].copy()
+
+        left, right = st.columns([1, 2])
+        with left:
+            st.dataframe(station_chute_table.head(75), width="stretch", hide_index=True)
+        with right:
+            if not station_chute_chart.empty:
+                fig = px.bar(
+                    station_chute_chart,
+                    x="count",
+                    y="Station -> Chute",
+                    color="NokReason",
+                    orientation="h",
+                    labels={
+                        "count": "Liczba",
+                        "Station -> Chute": "Stanowisko -> zrzutnia",
+                        "NokReason": "NIO",
+                    },
+                    title="Top pary stanowisko -> zrzutnia",
+                    color_discrete_sequence=COLOR_SEQUENCE,
+                    custom_data=["NokReason"],
+                )
+                fig.update_traces(
+                    hovertemplate=(
+                        "%{y}<br>"
+                        "NIO: %{customdata[0]}<br>"
+                        "Ilość: %{x}<extra></extra>"
+                    )
+                )
+                fig.update_layout(yaxis=dict(categoryorder="total ascending"))
+                fig = style_chart(fig, height=720)
+                st.plotly_chart(fig, width="stretch")
+            else:
+                st.info("Brak danych stanowisko -> zrzutnia dla aktualnych filtrów.")
 
 with tab_extra:
     st.subheader("Dodatkowe widoki")
