@@ -39,6 +39,7 @@ HOUR_BUCKETS = [
     ("20:00-21:00", time(20, 0), time(21, 0)),
     ("21:00-22:30", time(21, 0), time(22, 30)),
 ]
+BUCKET_LABELS = [label for label, _, _ in HOUR_BUCKETS]
 
 REQUIRED_COLUMNS = {
     "TimeTele",
@@ -256,6 +257,18 @@ def filter_by_time_window(df: pd.DataFrame, shift: str) -> pd.DataFrame:
         return df
     start, end = SHIFT_WINDOWS[shift]
     return df[(df["Godzina"] >= start) & (df["Godzina"] <= end)].copy()
+
+
+def bucket_range_labels(start_label: str, end_label: str) -> list[str]:
+    start_index = BUCKET_LABELS.index(start_label)
+    end_index = BUCKET_LABELS.index(end_label)
+    if start_index > end_index:
+        start_index, end_index = end_index, start_index
+    return BUCKET_LABELS[start_index : end_index + 1]
+
+
+def filter_by_bucket_range(df: pd.DataFrame, active_buckets: list[str]) -> pd.DataFrame:
+    return df[df["Przedzial"].isin(active_buckets)].copy()
 
 
 def available_values(df: pd.DataFrame, column: str) -> list[str]:
@@ -477,8 +490,19 @@ with st.sidebar:
         key=f"shift_{source_token}",
     )
 
+    hour_range = st.select_slider(
+        "Fragment godzinowy",
+        options=BUCKET_LABELS,
+        value=(BUCKET_LABELS[0], BUCKET_LABELS[-1]),
+        key=f"hour_range_{source_token}",
+    )
+    start_bucket, end_bucket = hour_range
+    active_bucket_order = bucket_range_labels(start_bucket, end_bucket)
+    st.caption("Domyślnie pełny zakres godzin. Suwak zawęża wszystkie widoki.")
+
     option_scope = data[(data["Data"] >= start_date) & (data["Data"] <= end_date)].copy()
     option_scope = filter_by_time_window(option_scope, shift)
+    option_scope = filter_by_bucket_range(option_scope, active_bucket_order)
     reasons = with_all_option(available_values(option_scope, "NokReason"))
 
     selected_reason = st.selectbox(
@@ -515,6 +539,7 @@ with st.sidebar:
 
 filtered = data[(data["Data"] >= start_date) & (data["Data"] <= end_date)].copy()
 filtered = filter_by_time_window(filtered, shift)
+filtered = filter_by_bucket_range(filtered, active_bucket_order)
 reason_filtered = filter_optional(filtered, "NokReason", selected_reason)
 sorter_reason = filter_optional(reason_filtered, "Tray Sorter", selected_sorter)
 station_reason = filter_optional(sorter_reason, "Station", selected_station)
@@ -541,12 +566,13 @@ if filtered.empty:
     st.warning("Brak rekordów dla wybranego zakresu dat i zmiany.")
     st.stop()
 
-tab_hourly, tab_station, tab_tray, tab_station_tray, tab_extra, tab_data = st.tabs(
+tab_hourly, tab_station, tab_tray, tab_station_tray, tab_chute, tab_extra, tab_data = st.tabs(
     [
         "Rozkład godzinowy",
         "Sorter / stanowisko",
         "Sorter / taca",
         "Station / taca",
+        "Zrzutnie",
         "Dodatkowe widoki",
         "Dane",
     ]
@@ -554,7 +580,7 @@ tab_hourly, tab_station, tab_tray, tab_station_tray, tab_extra, tab_data = st.ta
 
 with tab_hourly:
     st.subheader("Analiza: Rozkład godzinowy NIO/Sorter")
-    bucket_order = [label for label, _, _ in HOUR_BUCKETS]
+    bucket_order = active_bucket_order
     hourly_counts = (
         station_reason.dropna(subset=["Przedzial"])
         .groupby("Przedzial", dropna=False)
@@ -569,18 +595,18 @@ with tab_hourly:
         st.dataframe(hourly_counts, width="stretch", hide_index=True)
     with right:
         if selected_sorter == ALL_LABEL:
+            sorters_for_chart = station_reason["Tray Sorter"].dropna().astype(str).sort_values().unique().tolist()
             hourly_by_sorter = (
                 station_reason.dropna(subset=["Przedzial"])
                 .groupby(["Przedzial", "Tray Sorter"], dropna=False)
                 .size()
-                .reset_index(name="count")
+                .rename("count")
             )
-            hourly_by_sorter["Przedzial"] = pd.Categorical(
-                hourly_by_sorter["Przedzial"],
-                categories=bucket_order,
-                ordered=True,
+            full_index = pd.MultiIndex.from_product(
+                [bucket_order, sorters_for_chart],
+                names=["Przedzial", "Tray Sorter"],
             )
-            hourly_by_sorter = hourly_by_sorter.sort_values(["Przedzial", "Tray Sorter"])
+            hourly_by_sorter = hourly_by_sorter.reindex(full_index, fill_value=0).reset_index()
             fig = px.line(
                 hourly_by_sorter,
                 x="Przedzial",
@@ -593,6 +619,7 @@ with tab_hourly:
                     "Tray Sorter": "Sorter",
                 },
                 color_discrete_sequence=COLOR_SEQUENCE,
+                category_orders={"Przedzial": bucket_order},
             )
         else:
             fig = px.line(
@@ -602,9 +629,11 @@ with tab_hourly:
                 markers=True,
                 labels={"count": "Liczba", "Przedział": "Przedział godzinowy"},
                 color_discrete_sequence=[COLOR_SEQUENCE[0]],
+                category_orders={"PrzedziaĹ‚": bucket_order},
             )
         fig = style_chart(fig, height=470)
         fig.update_layout(margin=dict(l=20, r=20, t=20, b=20))
+        fig.update_xaxes(categoryorder="array", categoryarray=bucket_order)
         st.plotly_chart(fig, width="stretch")
 
 with tab_station:
@@ -694,6 +723,57 @@ with tab_station_tray:
         else:
             st.info("Brak danych dla tej kombinacji filtrów.")
 
+with tab_chute:
+    st.subheader("Analiza: do jakiej zrzutni spadają NIO")
+    if "Chute" not in station_reason.columns:
+        st.info("Brak kolumny Chute w danych.")
+    else:
+        chute_scope = station_reason.copy()
+        chute_scope["Chute"] = chute_scope["Chute"].fillna("brak").astype(str)
+
+        chute_table = make_count_table(
+            chute_scope,
+            ["Chute", "Tray Sorter", "NokReason"],
+        )
+        chute_chart = (
+            chute_scope.groupby(["Chute", "NokReason"], dropna=False)
+            .size()
+            .reset_index(name="count")
+        )
+        top_chutes = (
+            chute_chart.groupby("Chute")["count"]
+            .sum()
+            .sort_values(ascending=False)
+            .head(20)
+            .index.tolist()
+        )
+        chute_chart = chute_chart[chute_chart["Chute"].isin(top_chutes)].copy()
+
+        left, right = st.columns([1, 2])
+        with left:
+            st.dataframe(chute_table.head(50), width="stretch", hide_index=True)
+        with right:
+            if not chute_chart.empty:
+                fig = px.bar(
+                    chute_chart,
+                    x="count",
+                    y="Chute",
+                    color="NokReason",
+                    orientation="h",
+                    labels={"count": "Liczba", "Chute": "Zrzutnia", "NokReason": "NIO"},
+                    title="Top zrzutnie NIO",
+                    color_discrete_sequence=COLOR_SEQUENCE,
+                    custom_data=["NokReason"],
+                )
+                fig.update_traces(
+                    hovertemplate="Zrzutnia: %{y}<br>NIO: %{customdata[0]}<br>Ilość: %{x}<extra></extra>"
+                )
+                fig.update_layout(yaxis=dict(categoryorder="total ascending"))
+                fig = style_chart(fig, height=620)
+                st.plotly_chart(fig, width="stretch")
+            else:
+                st.info("Brak danych zrzutni dla aktualnych filtrów.")
+
 with tab_extra:
     st.subheader("Dodatkowe widoki")
     extra_left, extra_right = st.columns(2)
@@ -707,7 +787,7 @@ with tab_extra:
         )
         if not heatmap_data.empty:
             pivot = heatmap_data.pivot(index="Tray Sorter", columns="Przedzial", values="count").fillna(0)
-            pivot = pivot.reindex(columns=[label for label, _, _ in HOUR_BUCKETS], fill_value=0)
+            pivot = pivot.reindex(columns=active_bucket_order, fill_value=0)
             fig = px.imshow(
                 pivot,
                 aspect="auto",

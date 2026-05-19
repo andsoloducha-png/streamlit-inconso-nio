@@ -8,12 +8,14 @@ Pozwala szybko sprawdzić rozkład problemów według czasu, sortera, stanowiska
 - upload pliku CSV przez `drag and drop` albo przycisk `Upload`,
 - automatyczne czyszczenie wartości eksportowanych z Excela w formacie `="..."`,
 - filtry: zakres dat, zmiana, NIO/NokReason, sorter, station,
+- filtr fragmentu godzinowego z domyślnym pełnym zakresem,
 - zależna lista `Station` po wybranym zakresie, NIO i sorterze,
 - rozkład godzinowy NIO,
 - wykresy kołowe dla stanowisk i tac,
 - unikatowe tace w trybie `Sorter = Total`, np. `SO20 / 197`,
 - Pareto NIO,
 - porównanie `Shift 1` vs `Shift 2`,
+- osobna zakładka z analizą zrzutni (`Chute`),
 - ranking top kombinacji problemowych: sorter / station / taca / NIO,
 - podgląd danych po filtrach.
 
