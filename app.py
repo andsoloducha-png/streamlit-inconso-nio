@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from io import StringIO
 from pathlib import Path
 
@@ -40,6 +40,8 @@ HOUR_BUCKETS = [
     ("21:00-22:30", time(21, 0), time(22, 30)),
 ]
 BUCKET_LABELS = [label for label, _, _ in HOUR_BUCKETS]
+TIME_FILTER_START = time(6, 0)
+TIME_FILTER_END = time(22, 30)
 
 REQUIRED_COLUMNS = {
     "TimeTele",
@@ -267,8 +269,33 @@ def bucket_range_labels(start_label: str, end_label: str) -> list[str]:
     return BUCKET_LABELS[start_index : end_index + 1]
 
 
-def filter_by_bucket_range(df: pd.DataFrame, active_buckets: list[str]) -> pd.DataFrame:
-    return df[df["Przedzial"].isin(active_buckets)].copy()
+def time_to_minutes(value: time) -> int:
+    return value.hour * 60 + value.minute
+
+
+def filter_by_clock_range(df: pd.DataFrame, start_time: time, end_time: time) -> pd.DataFrame:
+    start_minutes = time_to_minutes(start_time)
+    end_minutes = time_to_minutes(end_time)
+    if start_minutes > end_minutes:
+        start_minutes, end_minutes = end_minutes, start_minutes
+
+    minutes = df["Godzina"].map(time_to_minutes)
+    return df[(minutes >= start_minutes) & (minutes <= end_minutes)].copy()
+
+
+def bucket_labels_for_time_range(start_time: time, end_time: time) -> list[str]:
+    start_minutes = time_to_minutes(start_time)
+    end_minutes = time_to_minutes(end_time)
+    if start_minutes > end_minutes:
+        start_minutes, end_minutes = end_minutes, start_minutes
+
+    labels = []
+    for label, bucket_start, bucket_end in HOUR_BUCKETS:
+        bucket_start_minutes = time_to_minutes(bucket_start)
+        bucket_end_minutes = time_to_minutes(bucket_end)
+        if bucket_end_minutes >= start_minutes and bucket_start_minutes <= end_minutes:
+            labels.append(label)
+    return labels or BUCKET_LABELS
 
 
 def available_values(df: pd.DataFrame, column: str) -> list[str]:
@@ -490,19 +517,22 @@ with st.sidebar:
         key=f"shift_{source_token}",
     )
 
-    hour_range = st.select_slider(
+    hour_range = st.slider(
         "Fragment godzinowy",
-        options=BUCKET_LABELS,
-        value=(BUCKET_LABELS[0], BUCKET_LABELS[-1]),
+        min_value=TIME_FILTER_START,
+        max_value=TIME_FILTER_END,
+        value=(TIME_FILTER_START, TIME_FILTER_END),
+        step=timedelta(minutes=5),
+        format="HH:mm",
         key=f"hour_range_{source_token}",
     )
-    start_bucket, end_bucket = hour_range
-    active_bucket_order = bucket_range_labels(start_bucket, end_bucket)
+    start_time_filter, end_time_filter = hour_range
+    active_bucket_order = bucket_labels_for_time_range(start_time_filter, end_time_filter)
     st.caption("Domyślnie pełny zakres godzin. Suwak zawęża wszystkie widoki.")
 
     option_scope = data[(data["Data"] >= start_date) & (data["Data"] <= end_date)].copy()
     option_scope = filter_by_time_window(option_scope, shift)
-    option_scope = filter_by_bucket_range(option_scope, active_bucket_order)
+    option_scope = filter_by_clock_range(option_scope, start_time_filter, end_time_filter)
     reasons = with_all_option(available_values(option_scope, "NokReason"))
 
     selected_reason = st.selectbox(
@@ -539,7 +569,7 @@ with st.sidebar:
 
 filtered = data[(data["Data"] >= start_date) & (data["Data"] <= end_date)].copy()
 filtered = filter_by_time_window(filtered, shift)
-filtered = filter_by_bucket_range(filtered, active_bucket_order)
+filtered = filter_by_clock_range(filtered, start_time_filter, end_time_filter)
 reason_filtered = filter_optional(filtered, "NokReason", selected_reason)
 sorter_reason = filter_optional(reason_filtered, "Tray Sorter", selected_sorter)
 station_reason = filter_optional(sorter_reason, "Station", selected_station)
@@ -783,31 +813,25 @@ with tab_station_chute:
         station_chute_scope = station_reason.copy()
         station_chute_scope["Chute"] = station_chute_scope["Chute"].fillna("brak").astype(str)
         station_chute_scope["Station"] = station_chute_scope["Station"].fillna("brak").astype(str)
-        station_chute_scope["Station -> Chute"] = (
-            "Station "
-            + station_chute_scope["Station"]
-            + " -> Chute "
-            + station_chute_scope["Chute"]
-        )
 
         station_chute_table = make_count_table(
             station_chute_scope,
-            ["Tray Sorter", "Station", "Chute", "NokReason"],
+            ["Chute", "Station", "Tray Sorter", "NokReason"],
         )
         station_chute_chart = (
-            station_chute_scope.groupby(["Station -> Chute", "NokReason"], dropna=False)
+            station_chute_scope.groupby(["Chute", "Station"], dropna=False)
             .size()
             .reset_index(name="count")
         )
-        top_pairs = (
-            station_chute_chart.groupby("Station -> Chute")["count"]
+        top_chutes_by_station = (
+            station_chute_chart.groupby("Chute")["count"]
             .sum()
             .sort_values(ascending=False)
-            .head(25)
+            .head(20)
             .index.tolist()
         )
         station_chute_chart = station_chute_chart[
-            station_chute_chart["Station -> Chute"].isin(top_pairs)
+            station_chute_chart["Chute"].isin(top_chutes_by_station)
         ].copy()
 
         left, right = st.columns([1, 2])
@@ -817,28 +841,28 @@ with tab_station_chute:
             if not station_chute_chart.empty:
                 fig = px.bar(
                     station_chute_chart,
-                    x="count",
-                    y="Station -> Chute",
-                    color="NokReason",
-                    orientation="h",
+                    x="Chute",
+                    y="count",
+                    color="Station",
+                    barmode="stack",
                     labels={
                         "count": "Liczba",
-                        "Station -> Chute": "Stanowisko -> zrzutnia",
-                        "NokReason": "NIO",
+                        "Chute": "Zrzutnia",
+                        "Station": "Stanowisko",
                     },
-                    title="Top pary stanowisko -> zrzutnia",
+                    title="Zrzutnie NIO według stanowisk",
                     color_discrete_sequence=COLOR_SEQUENCE,
-                    custom_data=["NokReason"],
+                    custom_data=["Station"],
                 )
                 fig.update_traces(
                     hovertemplate=(
-                        "%{y}<br>"
-                        "NIO: %{customdata[0]}<br>"
-                        "Ilość: %{x}<extra></extra>"
+                        "Zrzutnia: %{x}<br>"
+                        "Station: %{customdata[0]}<br>"
+                        "Ilość: %{y}<extra></extra>"
                     )
                 )
-                fig.update_layout(yaxis=dict(categoryorder="total ascending"))
-                fig = style_chart(fig, height=720)
+                fig.update_layout(xaxis=dict(categoryorder="total descending"))
+                fig = style_chart(fig, height=620)
                 st.plotly_chart(fig, width="stretch")
             else:
                 st.info("Brak danych stanowisko -> zrzutnia dla aktualnych filtrów.")
