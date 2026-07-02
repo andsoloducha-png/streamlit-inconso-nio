@@ -17,7 +17,7 @@ FILTER_STATE_VERSION = "filters-total-default-v2"
 
 SHIFT_WINDOWS = {
     "Total": (time(6, 7), time(22, 30)),
-    "Shift 1": (time(6, 8, 30), time(14, 15)),
+    "Shift 1": (time(6, 7), time(14, 15)),
     "Shift 2": (time(14, 20), time(22, 30)),
 }
 
