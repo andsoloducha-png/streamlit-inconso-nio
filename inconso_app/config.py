@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import time
 from pathlib import Path
 
-APP_DIR = Path(__file__).parent
+APP_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CSV = APP_DIR / "Blocklist.csv"
 ALL_LABEL = "Total"
 FILTER_STATE_VERSION = "filters-total-default-v2"
