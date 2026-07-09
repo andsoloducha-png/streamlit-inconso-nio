@@ -103,6 +103,17 @@ def configure_page() -> None:
         [data-testid="stTabs"] button[aria-selected="true"] {
             color: var(--text-main);
         }
+        div[data-baseweb="popover"] {
+            max-height: calc(100vh - 1rem) !important;
+            overflow-y: auto !important;
+        }
+        div[data-baseweb="popover"] [role="listbox"],
+        div[data-baseweb="popover"] ul,
+        div[data-baseweb="menu"] {
+            max-height: min(240px, 45vh) !important;
+            overflow-y: auto !important;
+            overscroll-behavior: contain;
+        }
         h1, h2, h3, h4, h5, h6, p, li, label, span {
             color: var(--text-main);
         }
