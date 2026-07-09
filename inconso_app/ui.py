@@ -160,17 +160,7 @@ def render_app() -> None:
         option_scope = filter_by_clock_range(
             option_scope, start_time_filter, end_time_filter
         )
-        reasons = with_all_option(available_values(option_scope, "NokReason"))
-
-        selected_reason = st.selectbox(
-            "NIO / NokReason",
-            options=reasons,
-            index=0,
-            key=f"reason_{source_token}",
-        )
-
-        sorter_scope = filter_optional(option_scope, "NokReason", selected_reason)
-        sorters = with_all_option(available_values(sorter_scope, "Tray Sorter"))
+        sorters = with_all_option(available_values(option_scope, "Tray Sorter"))
 
         selected_sorter = st.selectbox(
             "Sorter",
@@ -179,7 +169,17 @@ def render_app() -> None:
             key=f"sorter_{source_token}",
         )
 
-        station_scope = filter_optional(sorter_scope, "Tray Sorter", selected_sorter)
+        reason_scope = filter_optional(option_scope, "Tray Sorter", selected_sorter)
+        reasons = with_all_option(available_values(reason_scope, "NokReason"))
+
+        selected_reason = st.selectbox(
+            "NIO / NokReason",
+            options=reasons,
+            index=0,
+            key=f"reason_{source_token}_{selected_sorter}",
+        )
+
+        station_scope = filter_optional(reason_scope, "NokReason", selected_reason)
         station_values = [
             str(v)
             for v in station_scope["Station"]
