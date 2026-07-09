@@ -35,27 +35,6 @@ from .time_filters import (
 
 def render_app() -> None:
     """Render the full Streamlit dashboard and bind all app filters."""
-    with st.sidebar:
-        st.markdown("### ℹ️ Informacje")
-        st.markdown("""
-            **Raport zawiera:**
-
-            - 📊 Rozkład godzinowy NIO
-            - 🧩 Udział stanowisk
-            - 🥧 Udział tac
-            - 📈 Pareto i porównanie zmian
-            - 🎯 Top kombinacje problemowe
-            - 🔥 Mapę ciepła sorterów
-            - 📋 Podgląd danych
-
-            **Dane:**
-
-            - Format: CSV
-            - Separator: średnik
-            - Czas: `TimeTele`
-            """)
-        st.markdown("---")
-
     st.markdown(
         """
         <div class="app-hero">
