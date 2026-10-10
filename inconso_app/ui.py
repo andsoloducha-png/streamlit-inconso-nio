@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import re
 
 import pandas as pd
 import plotly.express as px
@@ -21,16 +22,33 @@ from .tables import (
     add_pie_hover_context,
     add_unique_tray_label,
     available_values,
-    filter_optional,
+    filter_multi,
     make_count_table,
     make_pareto_table,
-    with_all_option,
+    make_station_quality_table,
+    selection_label,
 )
 from .time_filters import (
     bucket_labels_for_time_range,
     filter_by_clock_range,
     filter_by_time_window,
+    interval_label,
+    interval_labels_for_time_range,
 )
+
+
+def natural_label_order(values: pd.Series | list[object]) -> list[str]:
+    """Sort chart labels in a human-friendly order instead of by metric value."""
+    labels = pd.Series(values).dropna().astype(str).unique().tolist()
+
+    def key(label: str) -> tuple[tuple[int, object], ...]:
+        parts = re.split(r"(\d+)", label)
+        return tuple(
+            (0, int(part), len(part)) if part.isdigit() else (1, part.casefold())
+            for part in parts
+        )
+
+    return sorted(labels, key=key)
 
 
 def render_app() -> None:
@@ -91,6 +109,12 @@ def render_app() -> None:
         st.warning("CSV nie zawiera poprawnych rekordów z datą w kolumnie TimeTele.")
         st.stop()
 
+    if uploaded_file is not None:
+        celebration_key = f"balloons_shown_{source_token}"
+        if not st.session_state.get(celebration_key, False):
+            st.balloons()
+            st.session_state[celebration_key] = True
+
     min_date = data["Data"].min()
     max_date = data["Data"].max()
 
@@ -139,57 +163,58 @@ def render_app() -> None:
         option_scope = filter_by_clock_range(
             option_scope, start_time_filter, end_time_filter
         )
-        sorters = with_all_option(available_values(option_scope, "Tray Sorter"))
+        sorters = available_values(option_scope, "Tray Sorter")
 
-        selected_sorter = st.selectbox(
+        selected_sorters = st.multiselect(
             "Sorter",
             options=sorters,
-            index=0,
+            default=[],
+            placeholder="Wybierz co najmniej jeden sorter",
             key=f"sorter_{source_token}",
         )
 
-        reason_scope = filter_optional(option_scope, "Tray Sorter", selected_sorter)
-        reasons = with_all_option(available_values(reason_scope, "NokReason"))
+        sorter_key_token = "_".join(selected_sorters) if selected_sorters else "all"
+        reason_scope = (
+            filter_multi(option_scope, "Tray Sorter", selected_sorters)
+            if selected_sorters
+            else option_scope.iloc[0:0].copy()
+        )
+        nio_reason_scope = reason_scope[reason_scope["IsNIO"]].copy()
+        reasons = available_values(nio_reason_scope, "NokReason")
 
-        selected_reason = st.selectbox(
+        selected_reasons = st.multiselect(
             "NIO / NokReason",
             options=reasons,
-            index=0,
-            key=f"reason_{source_token}_{selected_sorter}",
+            default=[],
+            placeholder="Wszystkie NIO",
+            key=f"reason_{source_token}_{sorter_key_token}",
+            disabled=not selected_sorters,
         )
 
-        station_scope = filter_optional(reason_scope, "NokReason", selected_reason)
+        reason_key_token = "_".join(selected_reasons) if selected_reasons else "all"
+        station_scope = filter_multi(nio_reason_scope, "NokReason", selected_reasons)
+        station_options_scope = (
+            station_scope if not station_scope.empty else reason_scope
+        )
         station_values = [
             str(v)
-            for v in station_scope["Station"]
+            for v in station_options_scope["Station"]
             .dropna()
             .astype(int)
             .sort_values()
             .unique()
             .tolist()
         ]
-        stations = with_all_option(station_values)
 
-        selected_station = st.selectbox(
+        selected_stations = st.multiselect(
             "Station",
-            options=stations,
-            index=0,
-            key=f"station_{source_token}_{selected_reason}_{selected_sorter}",
+            options=station_values,
+            default=[],
+            placeholder="Wszystkie stanowiska",
+            key=f"station_{source_token}_{sorter_key_token}_{reason_key_token}",
+            disabled=not selected_sorters,
         )
         st.caption("Lista Station zależy od zakresu dat, zmiany, NIO i sortera.")
-
-    filtered = data[(data["Data"] >= start_date) & (data["Data"] <= end_date)].copy()
-    filtered = filter_by_time_window(filtered, shift)
-    filtered = filter_by_clock_range(filtered, start_time_filter, end_time_filter)
-    reason_filtered = filter_optional(filtered, "NokReason", selected_reason)
-    sorter_reason = filter_optional(reason_filtered, "Tray Sorter", selected_sorter)
-    station_reason = filter_optional(sorter_reason, "Station", selected_station)
-
-    reason_label = "Total NIO" if selected_reason == ALL_LABEL else selected_reason
-    sorter_label = "Total sortery" if selected_sorter == ALL_LABEL else selected_sorter
-    station_label = (
-        "Total stanowiska" if selected_station == ALL_LABEL else selected_station
-    )
 
     file_label = uploaded_file.name if uploaded_file else DEFAULT_CSV.name
     st.info(
@@ -197,20 +222,51 @@ def render_app() -> None:
             ",", " "
         )
     )
+
+    if not selected_sorters:
+        st.warning(
+            "Wybierz w panelu bocznym co najmniej jeden sorter, żeby uruchomić analizę."
+        )
+        st.stop()
+
+    filtered = data[(data["Data"] >= start_date) & (data["Data"] <= end_date)].copy()
+    filtered = filter_by_time_window(filtered, shift)
+    filtered = filter_by_clock_range(filtered, start_time_filter, end_time_filter)
+    sorter_filtered = filter_multi(filtered, "Tray Sorter", selected_sorters)
+    filtered = filter_multi(sorter_filtered, "Station", selected_stations)
+    nio_scope = sorter_filtered[sorter_filtered["IsNIO"]].copy()
+    reason_filtered = filter_multi(nio_scope, "NokReason", selected_reasons)
+    sorter_reason = reason_filtered
+    station_reason = filter_multi(reason_filtered, "Station", selected_stations)
+
+    reason_label = selection_label(selected_reasons, "Total NIO", "NIO")
+    sorter_label = selection_label(selected_sorters, "Total sortery", "sorterów")
+    station_label = selection_label(selected_stations, "Total stanowiska", "stanowisk")
+    single_sorter_label = (
+        selected_sorters[0] if len(selected_sorters) == 1 else ALL_LABEL
+    )
+    has_ok_records = (~data["IsNIO"]).any()
+    data_mode_label = "pełny strumień OK + NIO" if has_ok_records else "tylko NIO"
+
+    st.caption(f"Tryb danych: {data_mode_label}")
     st.markdown("---")
 
-    col_a, col_b, col_c, col_d = st.columns(4)
+    ok_count = int((~filtered["IsNIO"]).sum()) if "IsNIO" in filtered.columns else 0
+
+    col_a, col_b, col_c, col_d, col_e = st.columns(5)
     with col_a:
         metric_card("Rekordy", f"{len(filtered):,}".replace(",", " "))
     with col_b:
-        metric_card(
-            f"NIO: {reason_label}", f"{len(reason_filtered):,}".replace(",", " ")
-        )
+        metric_card("OK", f"{ok_count:,}".replace(",", " "))
     with col_c:
+        metric_card(
+            f"NIO: {reason_label}", f"{len(station_reason):,}".replace(",", " ")
+        )
+    with col_d:
         metric_card(
             f"Sorter: {sorter_label}", f"{len(sorter_reason):,}".replace(",", " ")
         )
-    with col_d:
+    with col_e:
         metric_card(
             f"Station: {station_label}", f"{len(station_reason):,}".replace(",", " ")
         )
@@ -218,6 +274,19 @@ def render_app() -> None:
     if filtered.empty:
         st.warning("Brak rekordów dla wybranego zakresu dat i zmiany.")
         st.stop()
+
+    tab_labels = [
+        "Rozkład w czasie",
+        "Sorter / stanowisko",
+        "Sorter / taca",
+        "Station / taca",
+        "Zrzutnie",
+        "Zrzutnie / stanowiska",
+        "Dodatkowe widoki",
+        "Dane",
+    ]
+    if has_ok_records:
+        tab_labels.extend(["OK / zrzutnie", "Jakość stanowisk"])
 
     (
         tab_hourly,
@@ -228,84 +297,110 @@ def render_app() -> None:
         tab_station_chute,
         tab_extra,
         tab_data,
-    ) = st.tabs(
-        [
-            "Rozkład godzinowy",
-            "Sorter / stanowisko",
-            "Sorter / taca",
-            "Station / taca",
-            "Zrzutnie",
-            "Zrzutnie / stanowiska",
-            "Dodatkowe widoki",
-            "Dane",
-        ]
-    )
+        *full_data_tabs,
+    ) = st.tabs(tab_labels)
+    tab_ok_chute = full_data_tabs[0] if has_ok_records else None
+    tab_quality = full_data_tabs[1] if has_ok_records else None
 
     with tab_hourly:
-        st.subheader("Analiza: Rozkład godzinowy NIO/Sorter")
-        bucket_order = active_bucket_order
-        hourly_counts = (
-            station_reason.dropna(subset=["Przedzial"])
-            .groupby("Przedzial", dropna=False)
+        st.subheader("Analiza: rozklad w czasie")
+        interval_options = {
+            "Godzinowo": None,
+            "30 minut": 30,
+            "15 minut": 15,
+            "10 minut": 10,
+            "5 minut": 5,
+        }
+        col_time_mode, col_compare_mode = st.columns([1, 1])
+        with col_time_mode:
+            selected_interval_label = st.selectbox(
+                "Agregacja czasu",
+                options=list(interval_options.keys()),
+                index=0,
+                key=f"time_interval_{source_token}",
+            )
+        with col_compare_mode:
+            compare_by = st.segmented_control(
+                "Porownaj wedlug",
+                options=["NIO", "Sorter"],
+                default="NIO",
+                key=f"time_compare_{source_token}",
+            )
+
+        interval_minutes = interval_options[selected_interval_label]
+        time_scope = station_reason.copy()
+        if interval_minutes is None:
+            time_column = "Przedzial"
+            time_axis_label = "Przedzial czasu"
+            time_order = active_bucket_order
+        else:
+            time_column = "Przedzial czasu"
+            time_axis_label = f"Przedzial {selected_interval_label.lower()}"
+            time_order = interval_labels_for_time_range(
+                start_time_filter, end_time_filter, interval_minutes
+            )
+            time_scope[time_column] = time_scope["Godzina"].map(
+                lambda value: interval_label(value, interval_minutes)
+            )
+
+        time_counts = (
+            time_scope.dropna(subset=[time_column])
+            .groupby(time_column, dropna=False)
             .size()
-            .reindex(bucket_order, fill_value=0)
+            .reindex(time_order, fill_value=0)
             .reset_index(name="count")
-            .rename(columns={"Przedzial": "Przedział"})
         )
 
         left, right = st.columns([1, 3])
         with left:
-            st.dataframe(hourly_counts, width="stretch", hide_index=True)
+            st.dataframe(time_counts, width="stretch", hide_index=True)
         with right:
-            if selected_sorter == ALL_LABEL:
-                sorters_for_chart = (
-                    station_reason["Tray Sorter"]
-                    .dropna()
-                    .astype(str)
-                    .sort_values()
-                    .unique()
-                    .tolist()
-                )
-                hourly_by_sorter = (
-                    station_reason.dropna(subset=["Przedzial"])
-                    .groupby(["Przedzial", "Tray Sorter"], dropna=False)
+            compare_column = "NokReason" if compare_by == "NIO" else "Tray Sorter"
+            compare_values = (
+                time_scope[compare_column].dropna().astype(str).unique().tolist()
+            )
+            compare_values = natural_label_order(compare_values)
+            if compare_values:
+                time_by_series = (
+                    time_scope.dropna(subset=[time_column])
+                    .groupby([time_column, compare_column], dropna=False)
                     .size()
                     .rename("count")
                 )
                 full_index = pd.MultiIndex.from_product(
-                    [bucket_order, sorters_for_chart],
-                    names=["Przedzial", "Tray Sorter"],
+                    [time_order, compare_values],
+                    names=[time_column, compare_column],
                 )
-                hourly_by_sorter = hourly_by_sorter.reindex(
+                time_by_series = time_by_series.reindex(
                     full_index, fill_value=0
                 ).reset_index()
                 fig = px.line(
-                    hourly_by_sorter,
-                    x="Przedzial",
+                    time_by_series,
+                    x=time_column,
                     y="count",
-                    color="Tray Sorter",
+                    color=compare_column,
                     markers=True,
                     labels={
                         "count": "Liczba",
-                        "Przedzial": "Przedział godzinowy",
-                        "Tray Sorter": "Sorter",
+                        time_column: time_axis_label,
+                        compare_column: compare_by,
                     },
                     color_discrete_sequence=COLOR_SEQUENCE,
-                    category_orders={"Przedzial": bucket_order},
+                    category_orders={time_column: time_order},
                 )
             else:
                 fig = px.line(
-                    hourly_counts,
-                    x="Przedział",
+                    time_counts,
+                    x=time_column,
                     y="count",
                     markers=True,
-                    labels={"count": "Liczba", "Przedział": "Przedział godzinowy"},
+                    labels={"count": "Liczba", time_column: time_axis_label},
                     color_discrete_sequence=[COLOR_SEQUENCE[0]],
-                    category_orders={"PrzedziaĹ‚": bucket_order},
+                    category_orders={time_column: time_order},
                 )
-            fig = style_chart(fig, height=470)
+            fig = style_chart(fig, height=520)
             fig.update_layout(margin=dict(l=20, r=20, t=20, b=20))
-            fig.update_xaxes(categoryorder="array", categoryarray=bucket_order)
+            fig.update_xaxes(categoryorder="array", categoryarray=time_order)
             st.plotly_chart(fig, width="stretch")
 
     with tab_station:
@@ -345,7 +440,7 @@ def render_app() -> None:
             station_reason,
             ["Tray Sorter", "Tray Tray", "NokReason"],
         )
-        tray_table = add_unique_tray_label(tray_table, selected_sorter)
+        tray_table = add_unique_tray_label(tray_table, single_sorter_label)
         tray_table = (
             tray_table.sort_values("count", ascending=False)
             .head(20)
@@ -362,7 +457,9 @@ def render_app() -> None:
                     .sum()
                     .reset_index()
                 )
-                hover_source = add_unique_tray_label(station_reason, selected_sorter)
+                hover_source = add_unique_tray_label(
+                    station_reason, single_sorter_label
+                )
                 chart_data = add_pie_hover_context(
                     chart_data, hover_source, "Tray Label"
                 )
@@ -382,7 +479,9 @@ def render_app() -> None:
             station_reason,
             ["Tray Sorter", "Station", "Tray Tray", "NokReason"],
         )
-        station_tray_table = add_unique_tray_label(station_tray_table, selected_sorter)
+        station_tray_table = add_unique_tray_label(
+            station_tray_table, single_sorter_label
+        )
         station_tray_table = (
             station_tray_table.sort_values("count", ascending=False)
             .head(20)
@@ -399,7 +498,9 @@ def render_app() -> None:
                     .sum()
                     .reset_index()
                 )
-                hover_source = add_unique_tray_label(station_reason, selected_sorter)
+                hover_source = add_unique_tray_label(
+                    station_reason, single_sorter_label
+                )
                 chart_data = add_pie_hover_context(
                     chart_data, hover_source, "Tray Label"
                 )
@@ -438,6 +539,8 @@ def render_app() -> None:
                 .index.tolist()
             )
             chute_chart = chute_chart[chute_chart["Chute"].isin(top_chutes)].copy()
+            chute_order = natural_label_order(chute_chart["Chute"])
+            reason_order = natural_label_order(chute_chart["NokReason"])
 
             left, right = st.columns([1, 2])
             with left:
@@ -458,11 +561,19 @@ def render_app() -> None:
                         title="Top zrzutnie NIO",
                         color_discrete_sequence=COLOR_SEQUENCE,
                         custom_data=["NokReason"],
+                        category_orders={
+                            "Chute": chute_order,
+                            "NokReason": reason_order,
+                        },
                     )
                     fig.update_traces(
                         hovertemplate="Zrzutnia: %{y}<br>NIO: %{customdata[0]}<br>Ilość: %{x}<extra></extra>"
                     )
-                    fig.update_layout(yaxis=dict(categoryorder="total ascending"))
+                    fig.update_yaxes(
+                        categoryorder="array",
+                        categoryarray=chute_order,
+                        autorange="reversed",
+                    )
                     fig = style_chart(fig, height=620)
                     st.plotly_chart(fig, width="stretch")
                 else:
@@ -500,6 +611,8 @@ def render_app() -> None:
             station_chute_chart = station_chute_chart[
                 station_chute_chart["Chute"].isin(top_chutes_by_station)
             ].copy()
+            station_chute_order = natural_label_order(station_chute_chart["Chute"])
+            station_order = natural_label_order(station_chute_chart["Station"])
 
             left, right = st.columns([1, 2])
             with left:
@@ -522,6 +635,10 @@ def render_app() -> None:
                         title="Zrzutnie NIO według stanowisk",
                         color_discrete_sequence=COLOR_SEQUENCE,
                         custom_data=["Station"],
+                        category_orders={
+                            "Chute": station_chute_order,
+                            "Station": station_order,
+                        },
                     )
                     fig.update_traces(
                         hovertemplate=(
@@ -530,7 +647,9 @@ def render_app() -> None:
                             "Ilość: %{y}<extra></extra>"
                         )
                     )
-                    fig.update_layout(xaxis=dict(categoryorder="total descending"))
+                    fig.update_xaxes(
+                        categoryorder="array", categoryarray=station_chute_order
+                    )
                     fig = style_chart(fig, height=620)
                     st.plotly_chart(fig, width="stretch")
                 else:
@@ -554,6 +673,7 @@ def render_app() -> None:
                     index="Tray Sorter", columns="Przedzial", values="count"
                 ).fillna(0)
                 pivot = pivot.reindex(columns=active_bucket_order, fill_value=0)
+                pivot = pivot.reindex(index=natural_label_order(pivot.index))
                 fig = px.imshow(
                     pivot,
                     aspect="auto",
@@ -590,6 +710,7 @@ def render_app() -> None:
             .sort_values("Data")
         )
         if not trend.empty:
+            trend_sorter_order = natural_label_order(trend["Tray Sorter"])
             fig = px.line(
                 trend,
                 x="Data",
@@ -599,6 +720,7 @@ def render_app() -> None:
                 labels={"count": "Liczba", "Data": "Data", "Tray Sorter": "Sorter"},
                 title=f"Trend dzienny: {reason_label}",
                 color_discrete_sequence=COLOR_SEQUENCE,
+                category_orders={"Tray Sorter": trend_sorter_order},
             )
             fig = style_chart(fig, height=420)
             st.plotly_chart(fig, width="stretch")
@@ -610,6 +732,8 @@ def render_app() -> None:
             st.subheader("Pareto NIO")
             pareto = make_pareto_table(station_reason, "NokReason", limit=15)
             if not pareto.empty:
+                pareto = pareto.copy()
+                pareto["pct_label"] = pareto["pct"].map(lambda value: f"{value:.1f}%")
                 pareto_labels = pareto["NokReason"].astype(str)
                 fig = go.Figure()
                 fig.add_trace(
@@ -618,6 +742,9 @@ def render_app() -> None:
                         y=pareto["count"],
                         name="Ilość",
                         marker_color=COLOR_SEQUENCE[0],
+                        text=pareto["count"],
+                        textposition="outside",
+                        cliponaxis=False,
                         hovertemplate="NIO: %{x}<br>Ilość: %{y}<extra></extra>",
                     )
                 )
@@ -629,6 +756,9 @@ def render_app() -> None:
                         mode="lines+markers",
                         yaxis="y2",
                         line=dict(color="#f59e0b", width=3),
+                        marker=dict(size=8),
+                        text=pareto["pct_label"],
+                        textposition="top center",
                         hovertemplate="NIO: %{x}<br>% narastająco: %{y:.2f}%<extra></extra>",
                     )
                 )
@@ -639,13 +769,38 @@ def render_app() -> None:
                         title="% narastająco",
                         overlaying="y",
                         side="right",
-                        range=[0, 105],
+                        range=[0, 100],
+                        tickmode="array",
+                        tickvals=[0, 20, 40, 60, 80, 100],
+                        ticksuffix="%",
+                        showgrid=False,
                     ),
-                    xaxis=dict(title="NIO"),
+                    xaxis=dict(title="NIO", tickangle=-30),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1,
+                    ),
+                    bargap=0.25,
                 )
-                fig = style_chart(fig, height=470)
+                fig = style_chart(fig, height=560)
                 st.plotly_chart(fig, width="stretch")
-                st.dataframe(pareto, width="stretch", hide_index=True)
+                pareto_table = pareto.rename(
+                    columns={
+                        "NokReason": "NIO",
+                        "count": "Ilość",
+                        "pct": "% udział",
+                        "pct_cum": "% narastająco",
+                    }
+                )
+                st.dataframe(
+                    pareto_table[["NIO", "Ilość", "% udział", "% narastająco"]],
+                    width="stretch",
+                    hide_index=True,
+                    height=360,
+                )
             else:
                 st.info("Brak danych do Pareto dla aktualnych filtrów.")
 
@@ -654,9 +809,10 @@ def render_app() -> None:
             shift_scope = data[
                 (data["Data"] >= start_date) & (data["Data"] <= end_date)
             ].copy()
-            shift_scope = filter_optional(shift_scope, "NokReason", selected_reason)
-            shift_scope = filter_optional(shift_scope, "Tray Sorter", selected_sorter)
-            shift_scope = filter_optional(shift_scope, "Station", selected_station)
+            shift_scope = filter_multi(shift_scope, "Tray Sorter", selected_sorters)
+            shift_scope = shift_scope[shift_scope["IsNIO"]].copy()
+            shift_scope = filter_multi(shift_scope, "NokReason", selected_reasons)
+            shift_scope = filter_multi(shift_scope, "Station", selected_stations)
             shift_scope = shift_scope[shift_scope["Shift"].isin(["Shift 1", "Shift 2"])]
 
             if not shift_scope.empty:
@@ -675,6 +831,7 @@ def render_app() -> None:
                     .size()
                     .reset_index(name="count")
                 )
+                shift_reason_order = natural_label_order(shift_chart["NokReason"])
                 fig = px.bar(
                     shift_chart,
                     x="Shift",
@@ -685,11 +842,15 @@ def render_app() -> None:
                     title="Shift 1 vs Shift 2",
                     color_discrete_sequence=COLOR_SEQUENCE,
                     custom_data=["NokReason"],
+                    category_orders={
+                        "Shift": ["Shift 1", "Shift 2"],
+                        "NokReason": shift_reason_order,
+                    },
                 )
                 fig.update_traces(
                     hovertemplate="Zmiana: %{x}<br>NIO: %{customdata[0]}<br>Ilość: %{y}<extra></extra>"
                 )
-                fig = style_chart(fig, height=470)
+                fig = style_chart(fig, height=560)
                 st.plotly_chart(fig, width="stretch")
 
                 shift_table = shift_chart.pivot_table(
@@ -706,7 +867,7 @@ def render_app() -> None:
                 shift_table = shift_table.sort_values(
                     ["Shift 1", "Shift 2"], ascending=False
                 )
-                st.dataframe(shift_table, width="stretch", hide_index=True)
+                st.dataframe(shift_table, width="stretch", hide_index=True, height=360)
             else:
                 st.info("Brak danych do porównania Shift 1 vs Shift 2.")
 
@@ -771,3 +932,154 @@ def render_app() -> None:
             col for col in visible_columns if col in station_reason.columns
         ]
         st.dataframe(station_reason[existing_columns], width="stretch", hide_index=True)
+
+    if has_ok_records and tab_ok_chute is not None:
+        with tab_ok_chute:
+            st.subheader("Analiza: dobre rzeczy według zrzutni")
+            if "Chute" not in filtered.columns:
+                st.info("Brak kolumny Chute w danych.")
+            else:
+                ok_chute_scope = filtered[~filtered["IsNIO"]].copy()
+                ok_chute_scope["Chute"] = (
+                    ok_chute_scope["Chute"].fillna("brak").astype(str)
+                )
+
+                if ok_chute_scope.empty:
+                    st.info("Brak dobrych rekordów dla aktualnych filtrów.")
+                else:
+                    ok_chute_chart = (
+                        ok_chute_scope.groupby(["Chute", "Tray Sorter"], dropna=False)
+                        .size()
+                        .reset_index(name="count")
+                    )
+                    top_ok_chutes = (
+                        ok_chute_chart.groupby("Chute")["count"]
+                        .sum()
+                        .sort_values(ascending=False)
+                        .head(20)
+                        .index.tolist()
+                    )
+                    ok_chute_chart = ok_chute_chart[
+                        ok_chute_chart["Chute"].isin(top_ok_chutes)
+                    ].copy()
+                    ok_sorter_order = natural_label_order(ok_chute_chart["Tray Sorter"])
+                    ok_chute_table = make_count_table(
+                        ok_chute_scope[ok_chute_scope["Chute"].isin(top_ok_chutes)],
+                        ["Chute", "Tray Sorter", "Station"],
+                    )
+
+                    left, right = st.columns([1, 2])
+                    with left:
+                        st.dataframe(
+                            ok_chute_table.head(100),
+                            width="stretch",
+                            hide_index=True,
+                            height=620,
+                        )
+                    with right:
+                        fig = px.bar(
+                            ok_chute_chart.sort_values("count"),
+                            x="count",
+                            y="Chute",
+                            color="Tray Sorter",
+                            orientation="h",
+                            labels={
+                                "count": "Liczba",
+                                "Chute": "Zrzutnia",
+                                "Tray Sorter": "Sorter",
+                            },
+                            title="Top 20 zrzutni dla dobrych rekordów",
+                            color_discrete_sequence=COLOR_SEQUENCE,
+                            custom_data=["Tray Sorter"],
+                            category_orders={"Tray Sorter": ok_sorter_order},
+                        )
+                        fig.update_traces(
+                            hovertemplate=(
+                                "Zrzutnia: %{y}<br>"
+                                "Sorter: %{customdata[0]}<br>"
+                                "Ilość OK: %{x}<extra></extra>"
+                            )
+                        )
+                        fig = style_chart(fig, height=620)
+                        st.plotly_chart(fig, width="stretch")
+
+    if has_ok_records and tab_quality is not None:
+        with tab_quality:
+            st.subheader("Jakość stanowisk")
+            quality_table = make_station_quality_table(filtered)
+            if quality_table.empty:
+                st.info("Brak danych jakości dla aktualnych filtrów.")
+            else:
+                nio_quality_scope = filtered[filtered["IsNIO"]].copy()
+                if not nio_quality_scope.empty:
+                    reason_counts = (
+                        nio_quality_scope.groupby(
+                            ["Station", "NokReason"], dropna=False
+                        )
+                        .size()
+                        .unstack(fill_value=0)
+                        .reset_index()
+                    )
+                    reason_counts.columns = [
+                        "Station" if column == "Station" else str(column)
+                        for column in reason_counts.columns
+                    ]
+                    reason_columns = [
+                        column
+                        for column in reason_counts.columns
+                        if column != "Station"
+                    ]
+                    reason_columns = natural_label_order(reason_columns)
+                    reason_counts = reason_counts[["Station", *reason_columns]]
+
+                    quality_table = quality_table.merge(
+                        reason_counts, on="Station", how="left"
+                    ).fillna(0)
+                    for reason in reason_columns:
+                        percent_column = f"{reason} % całości"
+                        quality_table[percent_column] = (
+                            quality_table[reason] / quality_table["Wszystkie"] * 100
+                        ).round(2)
+
+                    ordered_columns = ["Station", "Wszystkie", "OK", "NIO", "% NIO"]
+                    for reason in reason_columns:
+                        ordered_columns.extend([reason, f"{reason} % całości"])
+                    quality_table = quality_table[ordered_columns]
+
+                left, right = st.columns([1, 2])
+                with left:
+                    st.dataframe(
+                        quality_table, width="stretch", hide_index=True, height=560
+                    )
+                with right:
+                    chart_data = quality_table.sort_values(
+                        ["% NIO", "NIO"], ascending=False
+                    ).head(20)
+                    station_quality_order = natural_label_order(chart_data["Station"])
+                    fig = px.bar(
+                        chart_data,
+                        x="% NIO",
+                        y="Station",
+                        orientation="h",
+                        labels={"% NIO": "% NIO", "Station": "Station"},
+                        title="Top stanowiska według % NIO",
+                        color_discrete_sequence=[COLOR_SEQUENCE[1]],
+                        custom_data=["Wszystkie", "OK", "NIO"],
+                        category_orders={"Station": station_quality_order},
+                    )
+                    fig.update_traces(
+                        hovertemplate=(
+                            "Station: %{y}<br>"
+                            "% NIO: %{x:.2f}%<br>"
+                            "Wszystkie: %{customdata[0]}<br>"
+                            "OK: %{customdata[1]}<br>"
+                            "NIO: %{customdata[2]}<extra></extra>"
+                        )
+                    )
+                    fig.update_yaxes(
+                        categoryorder="array",
+                        categoryarray=station_quality_order,
+                        autorange="reversed",
+                    )
+                    fig = style_chart(fig, height=560)
+                    st.plotly_chart(fig, width="stretch")

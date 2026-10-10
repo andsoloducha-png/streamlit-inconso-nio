@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -28,6 +30,15 @@ def style_chart(fig, height: int = 520):
 
 def pie_chart(df: pd.DataFrame, names: str, values: str, title: str):
     """Build a donut chart with optional NIO and sorter hover context."""
+
+    def key(label: str) -> tuple[tuple[int, object], ...]:
+        parts = re.split(r"(\d+)", label)
+        return tuple(
+            (0, int(part), len(part)) if part.isdigit() else (1, part.casefold())
+            for part in parts
+        )
+
+    df = df.copy().sort_values(names, key=lambda series: series.astype(str).map(key))
     custom_data = (
         ["hover_nio", "hover_sorter"]
         if {"hover_nio", "hover_sorter"}.issubset(df.columns)

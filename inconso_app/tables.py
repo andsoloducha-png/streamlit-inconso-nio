@@ -23,6 +23,27 @@ def filter_optional(df: pd.DataFrame, column: str, selected_value: str) -> pd.Da
     return df[df[column].astype("string") == selected_value].copy()
 
 
+def filter_multi(
+    df: pd.DataFrame, column: str, selected_values: list[str]
+) -> pd.DataFrame:
+    """Apply a multi-value filter; an empty selection means all values."""
+    if not selected_values:
+        return df.copy()
+    selected = [str(value) for value in selected_values]
+    return df[df[column].astype("string").isin(selected)].copy()
+
+
+def selection_label(
+    selected_values: list[str], all_label: str, item_label: str, limit: int = 3
+) -> str:
+    """Build a compact label for metrics from a multi-select value list."""
+    if not selected_values:
+        return all_label
+    if len(selected_values) <= limit:
+        return ", ".join(str(value) for value in selected_values)
+    return f"{len(selected_values)} {item_label}"
+
+
 def make_count_table(
     df: pd.DataFrame, group_columns: list[str], limit: int | None = None
 ) -> pd.DataFrame:
@@ -80,9 +101,27 @@ def make_pareto_table(df: pd.DataFrame, column: str, limit: int = 15) -> pd.Data
         )
 
     total = table["count"].sum()
-    table["pct"] = (table["count"] / total * 100).round(2)
-    table["pct_cum"] = table["pct"].cumsum().round(2)
+    share = table["count"] / total * 100
+    table["pct"] = share.round(2)
+    table["pct_cum"] = share.cumsum().round(2)
     return table
+
+
+def make_station_quality_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Summarize total, OK, NIO and NIO percentage per station."""
+    columns = ["Station", "Wszystkie", "OK", "NIO", "% NIO"]
+    if df.empty or "Station" not in df.columns or "IsNIO" not in df.columns:
+        return pd.DataFrame(columns=columns)
+
+    table = (
+        df.groupby("Station", dropna=False)
+        .agg(Wszystkie=("IsNIO", "size"), NIO=("IsNIO", "sum"))
+        .reset_index()
+    )
+    table["OK"] = table["Wszystkie"] - table["NIO"]
+    table["% NIO"] = (table["NIO"] / table["Wszystkie"] * 100).round(2)
+    table = table[["Station", "Wszystkie", "OK", "NIO", "% NIO"]]
+    return table.sort_values(["% NIO", "NIO"], ascending=False)
 
 
 def add_unique_tray_label(df: pd.DataFrame, selected_sorter: str) -> pd.DataFrame:

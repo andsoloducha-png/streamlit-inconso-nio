@@ -52,6 +52,14 @@ def load_csv(file_bytes: bytes | None, default_mtime: float | None) -> pd.DataFr
     df["Station"] = pd.to_numeric(df["Station"], errors="coerce").astype("Int64")
     df["Tray Sorter"] = df["Tray Sorter"].astype("string")
     df["NokReason"] = df["NokReason"].astype("string")
+    nok_reason = df["NokReason"].fillna("").astype(str).str.strip()
+    status = (
+        df["Status"].fillna("").astype(str).str.strip()
+        if "Status" in df.columns
+        else ""
+    )
+    df["IsNIO"] = nok_reason.ne("") | (status == "91")
+    df["Result"] = df["IsNIO"].map({True: "NIO", False: "OK"})
     df["Shift"] = df["Godzina"].map(assign_shift)
     df["Przedzial"] = df["Godzina"].map(assign_bucket)
 
